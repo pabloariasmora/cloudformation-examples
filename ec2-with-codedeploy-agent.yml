@@ -1,0 +1,205 @@
+Description: >-
+  Create instances ready for CodeDeploy: Create up to 3 Amazon EC2 instances
+  with an associated instance profile and install the AWS CodeDeploy Agent.
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  TagKey:
+    Description: The EC2 tag key that identifies this as a target for deployments.
+    Type: String
+    Default: Name
+    AllowedPattern: '[\x20-\x7E]*'
+    ConstraintDescription: Can contain only ASCII characters.
+  TagValue:
+    Description: The EC2 tag value that identifies this as a target for deployments.
+    Type: String
+    Default: CodeDeployDemo
+    AllowedPattern: '[\x20-\x7E]*'
+    ConstraintDescription: Can contain only ASCII characters.
+  KeyPairName:
+    Description: >-
+      Name of an existing Amazon EC2 key pair to enable SSH or RDP access to the
+      instances.
+    Type: String
+    MinLength: '1'
+    MaxLength: '255'
+    AllowedPattern: '[\x20-\x7E]*'
+    ConstraintDescription: KeyPairName is a required Field and can contain only ASCII characters.
+  InstanceCount:
+    Description: Number of Amazon EC2 instances (Must be a number between 1 and 3).
+    Type: Number
+    Default: '1'
+    ConstraintDescription: Must be a number between 1 and 3.
+    MinValue: '1'
+    MaxValue: '3'
+Resources:
+  LinuxEC2Instance:
+    Type: 'AWS::EC2::Instance'
+    Metadata:
+      'AWS::CloudFormation::Init':
+        services:
+          sysvint:
+            codedeploy-agent:
+              enabled: 'true'
+              ensureRunning: 'true'
+      'AWS::CloudFormation::Designer':
+        id: a736b860-ee90-489c-a970-40e555ac4f1d
+    Properties:
+      SecurityGroups:
+        - !Ref InstanceSecurityGroup
+      ImageId:  ami-02354e95b39ca8dec
+      InstanceType: t3a.nano
+      UserData: !Base64
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash -ex
+            - |
+              yum update -y aws-cfn-bootstrap
+            - |
+              yum install -y aws-cli ruby wget
+            - |
+              # Helper function.
+            - |
+              function error_exit
+            - |
+              {
+            - '  /opt/aws/bin/cfn-signal -e 1 -r "$1" '''
+            - !Ref WaitHandle
+            - |
+              '
+            - |2
+                exit 1
+            - |
+              }
+            - |
+              # Install the AWS CodeDeploy Agent.
+            - |
+              cd /home/ec2-user/
+            - >
+              wget https://aws-codedeploy-us-east-1.s3.us-east-1.amazonaws.com/latest/install
+              || error_exit 'Failed to download AWS CodeDeploy Agent.'
+            - >
+              chmod +x ./install
+              || error_exit 'Failed to change permission to installer AWS CodeDeploy Agent.'
+            - >
+              ./install auto || error_exit 'Failed
+              to install AWS CodeDeploy Agent.'
+            - '/opt/aws/bin/cfn-init -s '
+            - !Ref 'AWS::StackId'
+            - ' -r LinuxEC2Instance --region '
+            - !Ref 'AWS::Region'
+            - |2
+               || error_exit 'Failed to run cfn-init.'
+            - |
+              # All is well, so signal success.
+            - >-
+              /opt/aws/bin/cfn-signal -e 0 -r "AWS CodeDeploy Agent setup
+              complete." '
+            - !Ref WaitHandle
+            - |
+              '
+      KeyName: !Ref KeyPairName
+      Tags:
+        - Key: !Ref TagKey
+          Value: !Ref TagValue
+      IamInstanceProfile: !Ref InstanceRoleInstanceProfile
+  WaitHandle:
+    Type: 'AWS::CloudFormation::WaitConditionHandle'
+  WaitCondition:
+    Type: 'AWS::CloudFormation::WaitCondition'
+    Properties:
+      Count: !Ref InstanceCount
+      Handle: !Ref WaitHandle
+      Timeout: '900'
+  InstanceSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Enable HTTP access via port 80 and SSH access.
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 51f0211c-dd13-4eaf-96d3-76f285d9ee94
+  CodeDeployTrustRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Sid: '1'
+            Effect: Allow
+            Principal:
+              Service:
+                - codedeploy.us-east-1.amazonaws.com
+                - codedeploy.us-west-2.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+  CodeDeployRolePolicies:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyName: CodeDeployPolicy
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Resource:
+              - '*'
+            Action:
+              - 'ec2:Describe*'
+          - Effect: Allow
+            Resource:
+              - '*'
+            Action:
+              - 'autoscaling:CompleteLifecycleAction'
+              - 'autoscaling:DeleteLifecycleHook'
+              - 'autoscaling:DescribeLifecycleHooks'
+              - 'autoscaling:DescribeAutoScalingGroups'
+              - 'autoscaling:PutLifecycleHook'
+              - 'autoscaling:RecordLifecycleActionHeartbeat'
+      Roles:
+        - !Ref CodeDeployTrustRole
+  InstanceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+  InstanceRolePolicies:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyName: InstanceRole
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'ec2:*'
+              - 'codedeploy:*'
+              - 'autoscaling:Describe*'
+              - 'cloudformation:Describe*'
+              - 'cloudformation:GetTemplate'
+              - 's3:Get*'
+            Resource: '*'
+      Roles:
+        - !Ref InstanceRole
+  InstanceRoleInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref InstanceRole
+Outputs:
+  CodeDeployTrustRoleARN:
+    Value: !GetAtt
+      - CodeDeployTrustRole
+      - Arn
